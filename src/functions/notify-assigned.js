@@ -6,14 +6,16 @@ const resend = new Resend(process.env.RESEND_API_KEY)
 const SUPABASE_URL = process.env.SUPABASE_URL
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY
 
-async function getUserInfo(userId) {
+async function getUserInfo(userId, context) {
   const userRes = await fetch(`${SUPABASE_URL}/auth/v1/admin/users/${userId}`, {
     headers: {
       apikey: SUPABASE_KEY,
       Authorization: `Bearer ${SUPABASE_KEY}`
     }
   })
+
   const user = await userRes.json()
+  context.log('USER RAW:', JSON.stringify(user))
 
   const profileRes = await fetch(
     `${SUPABASE_URL}/rest/v1/profiles?id=eq.${userId}&select=username,full_name`,
@@ -24,9 +26,13 @@ async function getUserInfo(userId) {
       }
     }
   )
+
   const [profile] = await profileRes.json()
 
-  return { email: user.email, ...profile }
+  return {
+    email: user.user?.email, // ✅ CORRECTION ICI
+    ...profile
+  }
 }
 
 async function insertNotification(userId, type, title, body, metadata) {
@@ -53,7 +59,11 @@ app.http('notify-assigned', {
   authLevel: 'anonymous',
 
   handler: async (req, context) => {
+
+    context.log('=== FUNCTION CALLED ===')
+
     const payload = await req.json()
+    context.log('PAYLOAD:', JSON.stringify(payload))
 
     if (!payload || payload.type !== 'UPDATE') {
       return { status: 200, body: 'ignored' }
@@ -65,20 +75,26 @@ app.http('notify-assigned', {
     const oldAssignee = old_record?.assigned_to
 
     if (!newAssignee || newAssignee === oldAssignee) {
+      context.log('No new assignment detected')
       return { status: 200, body: 'no new assignment' }
     }
 
     try {
-      const assignee = await getUserInfo(newAssignee)
+      const assignee = await getUserInfo(newAssignee, context)
 
-      await resend.emails.send({
-        from: 'TaskFlow <notifications@resend.dev>',
-        to: [assignee.email],
-        subject: `[TaskFlow] Nouvelle tâche : ${record.title}`,
-        html: `<h2>Bonjour ${assignee.full_name ?? assignee.username},</h2>
-        <p>Tâche assignée : <strong>${record.title}</strong></p>
-        <p>Priorité : ${record.priority}</p>`,
+      context.log('ASSIGNEE EMAIL:', assignee.email)
+
+      // edit mail
+      const emailToSend = assignee.email || 'tttttt@gmail.com'
+
+      const result = await resend.emails.send({
+        from: 'onboarding@resend.dev',
+        to: [emailToSend],
+        subject: `Nouvelle tâche : ${record.title}`,
+        html: `<h1>Test email</h1><p>${record.title}</p>`,
       })
+
+      context.log('RESEND RESULT:', JSON.stringify(result))
 
       await insertNotification(
         newAssignee,
@@ -94,7 +110,7 @@ app.http('notify-assigned', {
       return { status: 200, jsonBody: { ok: true } }
 
     } catch (err) {
-      context.log.error(err.message)
+      context.log.error('ERROR:', err.message)
       return { status: 500, jsonBody: { error: err.message } }
     }
   }
